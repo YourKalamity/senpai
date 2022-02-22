@@ -1,0 +1,3 @@
+git+https://github.com/LightSage/discord.py@master
+jishaku~=2.3.2
+requests~=2.27.1
