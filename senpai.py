@@ -26,6 +26,7 @@ import os
 import pathlib
 import sys
 import shutil
+import sqlite3
 
 from discord.ext import commands
 
@@ -71,6 +72,10 @@ class Senpai(discord.ext.commands.AutoShardedBot):
         allowed_mentions = discord.AllowedMentions(everyone=False, roles=True)
         activity = discord.Game(self.settings["STATUS"])
         status = discord.Status.idle
+        try:
+            self.database = sqlite3.connect("senpai_database.db")
+        except sqlite3.Error as e:
+            print(e)
         super().__init__(
                 command_prefix=self.settings["PREFIXES"],
                 intents=intents,
@@ -79,6 +84,7 @@ class Senpai(discord.ext.commands.AutoShardedBot):
                 status=status,
                 case_insensitive=True
         )
+
     def load_cogs(self):
         cog = ""
         for filename in os.listdir("./cogs"):
@@ -89,15 +95,36 @@ class Senpai(discord.ext.commands.AutoShardedBot):
                     print(f"[COGS] Loaded cog : {filename[:-3]}")
             except Exception as e:
                print(f"[COGS] Failed to load cog : {filename}")
+               print(f"[EXCP] {e}")
         try:
             cog = "jishaku"
             self.load_extension("jishaku")
             print("[COGS] Loaded cog : jishaku")
         except Exception as e:
             print(f"[COGS] Failed to load cog : jishaku")
+            print(f"[EXCP] {e}")
+    
+    def setup_db(self):
+        cursor = self.database.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS guilds (
+                guild_id integer PRIMARY KEY,
+                rule_channel integer,
+                rule_message integer
+            );
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS blacklist (
+                user_id integer PRIMARY KEY,
+                reason text
+            )
+        ''')
 
-    def run(self):
-        super().run(self.settings["TOKEN"])
+    def run(self, token=None):
+        if token == None:
+            token = self.settings["TOKEN"]
+        self.setup_db()
+        super().run(token)
 
 
 def main():
