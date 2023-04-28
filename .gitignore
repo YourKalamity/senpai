@@ -1,6 +1,6 @@
 settings.json
 senpai_database.db
-
+cogs/private_cog.py
 
 # Python Unnecessary Stuff
 __pycache__/

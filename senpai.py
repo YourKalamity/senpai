@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Senpai v2 - A Discord bot created with LightSage's discord.py fork
+# Senpai v2 - A Discord bot created with discord.py
 # https://github.com/YourKalamity/senpai
 #
 # ISC LICENSE
@@ -20,6 +20,9 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
 
+import aiohttp
+import asyncio
+import asqlite
 import discord
 import json
 import os
@@ -27,6 +30,7 @@ import pathlib
 import sys
 import shutil
 import sqlite3
+import traceback
 
 from discord.ext import commands
 
@@ -68,50 +72,60 @@ def load_settings():
 class Senpai(discord.ext.commands.AutoShardedBot):
     def __init__(self, settings):
         self.settings = settings
-        intents = discord.Intents(guilds=True, members=True, bans=True, messages=True)
+        intents = discord.Intents(guilds=True, members=True, bans=True, messages=True, message_content=True, reactions=True)
         allowed_mentions = discord.AllowedMentions(everyone=False, roles=True)
         activity = discord.Game(self.settings["STATUS"])
         status = discord.Status.idle
         try:
-            self.database = sqlite3.connect("senpai_database.db")
-        except sqlite3.Error as e:
-            print(e)
+            self.database = sqlite3.connect(self.settings["DATABASE"])
+            print("[INFO] Connected to database")
+        except Exception as e:
+            print(f"[EXCP] {e}")
+            print("[EXCP] Could not connect to database")
+            sys.exit(1)
+        
         super().__init__(
-                command_prefix=self.settings["PREFIXES"],
-                intents=intents,
-                allowed_mentions=allowed_mentions,
-                activity=activity,
-                status=status,
-                case_insensitive=True
+                command_prefix = self.settings["PREFIXES"],
+                intents = intents,
+                allowed_mentions = allowed_mentions,
+                activity = activity,
+                status = status,
+                case_insensitive = True,
+                application_id = self.settings["APPLICATION_ID"]
         )
 
-    def load_cogs(self):
-        cog = ""
-        for filename in os.listdir("./cogs"):
-            try:
-                if filename.endswith(".py"):
-                    cog = f"cogs.{filename[:-3]}"
-                    self.load_extension(cog)
-                    print(f"[COGS] Loaded cog : {filename[:-3]}")
-            except Exception as e:
-               print(f"[COGS] Failed to load cog : {filename}")
-               print(f"[EXCP] {e}")
-        try:
-            cog = "jishaku"
-            self.load_extension("jishaku")
-            print("[COGS] Loaded cog : jishaku")
-        except Exception as e:
-            print(f"[COGS] Failed to load cog : jishaku")
-            print(f"[EXCP] {e}")
-    
+    async def log_error(self, ctx, error):
+        guild = self.get_guild(self.settings["GUILD"])
+        channel = guild.get_channel(self.settings["ERROR_CHANNEL"])
+        # Create hash for error for easier searching
+        error_hash = hash(error)
+        # Get full exception
+        exception = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        # Get command invocation
+        invocation = ctx.message.content
+        # Format error message with traceback and invocation in embed
+        embed = discord.Embed(title=f"Senpai ran into an error :( `{error_hash}`", description=f"```py\n{exception}\n```", color=0xff0000)
+        embed.add_field(name="Command", value=f"```{invocation}```", inline=False)
+        embed.add_field(name="Channel", value=f"```{ctx.channel}```", inline=False)
+        embed.add_field(name="Author", value=f"```{ctx.author}```", inline=False)
+        embed.add_field(name="Guild", value=f"```{ctx.guild}```", inline=False)
+        embed.add_field(name="Message", value=f"```{ctx.message}```", inline=False)
+        embed.add_field(name="Jump", value=f"[Jump to message]({ctx.message.jump_url})", inline=False)
+        await channel.send(embed=embed)
+
+        await ctx.send(f"Senpai ran into an error :( `{error_hash}`")
+
     def setup_db(self):
         cursor = self.database.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS guilds (
                 guild_id integer PRIMARY KEY,
                 rule_channel integer,
-                rule_message integer
-            );
+                rule_message integer,
+                log_channel integer,
+                min_mod_role integer,
+                stars_enabled boolean
+            )
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS blacklist (
@@ -119,6 +133,55 @@ class Senpai(discord.ext.commands.AutoShardedBot):
                 reason text
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stars (
+                user_id integer,
+                guild_id integer,
+                stars integer,
+                PRIMARY KEY (user_id, guild_id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS star_roles (
+                guild_id integer,
+                role_id integer,
+                stars integer,
+                PRIMARY KEY (guild_id, role_id)
+            )
+        ''')
+
+    async def setup_hook(self):
+        self.session: aiohttp.ClientSession = aiohttp.ClientSession() 
+        self.tree.copy_global_to(guild=discord.Object(id=725325701321981962))
+        await self.tree.sync(guild=discord.Object(id=725325701321981962))
+        
+        print(f"[COGS] Loading cogs...")
+        cog = ""
+        for filename in os.listdir("./cogs"):
+            try:
+                if filename.endswith(".py"):
+                    cog = f"cogs.{filename[:-3]}"
+                    await self.load_extension(cog)
+                    print(f"[COGS] Loaded cog : {filename[:-3]}")
+            except Exception as e:
+               print(f"[COGS] Failed to load cog : {filename}")
+               print(f"[EXCP] {e}")
+        try:
+            cog = "jishaku"
+            await self.load_extension("jishaku")
+            print("[COGS] Loaded cog : jishaku")
+        except Exception as e:
+            print(f"[COGS] Failed to load cog : jishaku")
+            print(f"[EXCP] {e}")
+
+    async def on_command_error(self, ctx, error):
+        print(f"[EXCP] {error}")
+        if type(error) == commands.CommandNotFound:
+            return
+        else:
+            await self.log_error(ctx, error)
+    
+    
 
     def run(self, token=None):
         if token == None:
@@ -127,12 +190,12 @@ class Senpai(discord.ext.commands.AutoShardedBot):
         super().run(token)
 
 
+
 def main():
     bot = Senpai(load_settings())
-    print(f"[COGS] Loading cogs...")
-    bot.load_cogs()
     print(f"[INFO] Connecting to Discord...")
     bot.run()
+
 
 if __name__ == "__main__":
     os.chdir(sys.path[0])

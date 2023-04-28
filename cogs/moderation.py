@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Senpai v2 - A Discord bot created with LightSage's discord.py fork
+# Senpai v2 - A Discord bot created with discord.py
 # https://github.com/YourKalamity/senpai
 #
 # ISC LICENSE
@@ -22,6 +22,8 @@
 
 import discord
 from discord.ext import commands
+from discord import app_commands
+import typing
 
 class Moderation(commands.Cog):
     def __init__(self, bot):
@@ -50,16 +52,16 @@ class Moderation(commands.Cog):
                 await ctx.send("That's not a valid message specified")
             if message:
                 cursor = self.bot.database.cursor()
-                cursor.execute("SELECT guild_id FROM guilds WHERE guild_id = ?", (ctx.guild.id,))
-                data = cursor.fetchall()
+                await cursor.execute("SELECT guild_id FROM guilds WHERE guild_id = ?", (ctx.guild.id,))
+                data = await cursor.fetchall()
                 if len(data) == 0:
-                    cursor.execute("INSERT INTO guilds(guild_id, rule_channel, rule_message) VALUES(?, ?, ?)", (ctx.guild.id, channel.id, message.id,))
-                    self.bot.database.commit()
+                    await cursor.execute("INSERT INTO guilds(guild_id, rule_channel, rule_message) VALUES(?, ?, ?)", (ctx.guild.id, channel.id, message.id,))
+                    await self.bot.database.commit()
                     await ctx.send("Added rules channel for this server!")
                     return
                 else:
-                    cursor.execute("UPDATE guilds SET rule_channel = ?, rule_message = ? WHERE guild_id = ?", (channel.id, message.id, ctx.guild.id,))
-                    self.bot.database.commit()
+                    await cursor.execute("UPDATE guilds SET rule_channel = ?, rule_message = ? WHERE guild_id = ?", (channel.id, message.id, ctx.guild.id,))
+                    await self.bot.database.commit()
                     await ctx.send("Updated rules channel for this server!")
                     return
     
@@ -72,8 +74,8 @@ class Moderation(commands.Cog):
         if isinstance(rule_number, int) is False:
             rule_number = None
         cursor = self.bot.database.cursor()
-        cursor.execute("SELECT rule_channel, rule_message FROM guilds WHERE guild_id = ?", (ctx.guild.id,))
-        data = cursor.fetchall()
+        await cursor.execute("SELECT rule_channel, rule_message FROM guilds WHERE guild_id = ?", (ctx.guild.id,))
+        data = await cursor.fetchall()
         if len(data) == 0:
             await ctx.send("No rules channel has been set for this server")
         try:
@@ -93,5 +95,10 @@ class Moderation(commands.Cog):
                 else:
                     await ctx.send(message.content)
 
-def setup(bot):
-    bot.add_cog(Moderation(bot))
+
+
+    
+
+async def setup(bot):
+    await bot.add_cog(Moderation(bot))
+    
