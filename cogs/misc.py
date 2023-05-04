@@ -21,10 +21,43 @@
 #
 
 import discord
+import discord.ui
 from discord.ext import commands
 from discord import app_commands
 import pandas as pd
 import time
+import os
+
+class SimpleNavigation(discord.ui.View):
+    def __init__(self, pages: list):
+        super().__init__()
+        self.pages = pages
+        self.current_page = 0
+        self.children[0].disabled = True
+        if len(self.pages) == 1:
+            self.children[1].disabled = True
+
+    def disableEnableButtons(self):
+        if self.current_page == 0:
+            self.children[0].disabled = True
+        elif self.current_page == len(self.pages) - 1:
+            self.children[1].disabled = True
+        else:
+            self.children[0].disabled = False
+            self.children[1].disabled = False
+
+    @discord.ui.button(label='Back', style=discord.ButtonStyle.blurple)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page -= 1
+        self.disableEnableButtons()
+        await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+        
+
+    @discord.ui.button(label='Forward', style=discord.ButtonStyle.blurple)
+    async def forward(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page += 1
+        self.disableEnableButtons()
+        await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
 
 class Misc(commands.Cog):
     def __init__(self, bot):
@@ -34,82 +67,43 @@ class Misc(commands.Cog):
     async def on_ready(self):
         print(f"[INFO] {self.bot.user} is ready on Discord.")
 
-    @commands.command()
-    async def sql(self, ctx, *args):
-        print(ctx.message.content)
-        start = time.time()
-        if str(ctx.author.id) not in self.bot.settings["ADMINS"]:
-            return
-        sql = " ".join(args)
-
-        if sql.startswith("```sql") and sql.endswith("```"):
-            sql = sql[6:-3]
-        elif sql.startswith("```") and sql.endswith("```"):
-            sql = sql[3:-3]
-        
-        cursor = self.bot.database.cursor()
-        try:
-            await cursor.execute(sql)
-            output = cursor.fetchall()
-
-        except Exception as e:
-            await ctx.send(f"```{e}```")
-            return
-        finally:
-            cursor.close()
-        
-        # pretty print the output as a table using pandas
-        if output:
-            df = pd.DataFrame(output, columns=[x[0] for x in cursor.description])
-            
-        else:
-            df = pd.DataFrame()
-
-        # Send the output as embed
-        embed = discord.Embed(title="SQL Query", description=f"```{sql}```", color=0x00ff00)
-        embed.set_footer(text=f"Executed in {time.time() - start} seconds.")
-        if len(df) > 0:
-            embed.add_field(name="Output", value=f"```{df.to_string(index=False)}```")
-        await ctx.send(embed=embed)
-
     @app_commands.command(description="Run a SQL query.")
     @commands.is_owner()
     async def sql(self, interaction: discord.Interaction, sql: str):
-
         start = time.time()
-        if str(interaction.user.id) not in self.bot.settings["ADMINS"]:
-            return
-
-
-        if sql.startswith("```sql") and sql.endswith("```"):
-            sql = sql[6:-3]
-        elif sql.startswith("```") and sql.endswith("```"):
-            sql = sql[3:-3]
-        
-        cursor = self.bot.database.cursor()
-        try:
+        async with self.bot.database.execute(sql) as cursor:
             await cursor.execute(sql)
-            output = await cursor.fetchall()
-
-        except Exception as e:
-            await interaction.send(f"```{e}```")
-            return
-        finally:
-            cursor.close()
+            result = await cursor.fetchall()
         
-        # pretty print the output as a table using pandas
-        if output:
-            df = pd.DataFrame(output, columns=[x[0] for x in cursor.description])
-            
-        else:
-            df = pd.DataFrame()
+            if result:
+                
+                df = pd.DataFrame(result)
+            else:
+                df = "No output."
+        
+        end = round((time.time() - start) * 1000, 2)
 
-        # Send the output as embed
-        embed = discord.Embed(title="SQL Query", description=f"```{sql}```", color=0x00ff00)
-        embed.set_footer(text=f"Executed in {time.time() - start} seconds.")
-        if len(df) > 0:
-            embed.add_field(name="Output", value=f"```{df.to_string(index=False)}```")
-        await interaction.response.send_message()
+        # Page embeds if more than 20 rows use forward and back buttons to navigate
+        if isinstance(df, pd.DataFrame):
+            if len(df) > 10:
+                pages = []
+                for i in range(0, len(df), 10):
+                    embed = discord.Embed(title="SQL Query", description=f"```sql\n{sql}```", color=0xfadadd)
+                    embed.add_field(name="Result", value=f"```{df[i:i+10]}```", inline=False)
+                    embed.set_footer(text=f"Executed in {end}ms")
+                    pages.append(embed)
+                await interaction.response.send_message(embed=pages[0], view=SimpleNavigation(pages))
+            else:
+                embed = discord.Embed(title="SQL Query", description=f"```sql\n{sql}```", color=0xfadadd)
+                embed.add_field(name="Result", value=f"```{df}```", inline=False)
+                embed.set_footer(text=f"Executed in {end}ms")
+                await interaction.response.send_message(embed=embed)
+        else:
+            embed = discord.Embed(title="SQL Query", description=f"```sql\n{sql}```", color=0xfadadd)
+            embed.add_field(name="Result", value=f"```{df}```", inline=False)
+            embed.set_footer(text=f"Executed in {end}ms")
+            await interaction.response.send_message(embed=embed)
+
 
     # Enable stars in a server (only by an adminstrator)
     @app_commands.command(description="Enable stars in this server.")
@@ -149,8 +143,59 @@ class Misc(commands.Cog):
             await self.bot.database.commit()
             await interaction.response.send_message("Stars disabled.")
 
-    
-        
+    @app_commands.command(description="Load a cog.")
+    @commands.is_owner()
+    async def load(self, interaction: discord.Interaction, cog: str):
+        try:
+            await self.bot.load_extension(f"cogs.{cog}")
+        except Exception as e:
+            await interaction.response.send_message(f"```py\n{e}```", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"Loaded {cog}.")
+
+    @app_commands.command(description="Unload a cog.")
+    @commands.is_owner()
+    async def unload(self, interaction: discord.Interaction, cog: str):
+        try:
+            await self.bot.unload_extension(f"cogs.{cog}")
+        except Exception as e:
+            await interaction.response.send_message(f"```py\n{e}```", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"Unloaded {cog}.")
+
+    @app_commands.command(description="Reload a cog.")
+    @commands.is_owner()
+    async def reload(self, interaction: discord.Interaction, cog: str):
+        if cog == "all":
+            for file in os.listdir("./cogs"):
+                if file.endswith(".py"):
+                    cog = file[:-3]
+                    try:
+                        await self.bot.reload_extension(f"cogs.{cog}")
+                    except Exception as e:
+                        await interaction.channel.send(f"```py\n{e}```")
+                    else:
+                        await interaction.channel.send(f"Reloaded {cog}.")
+            await interaction.channel.send("Reloaded all cogs.")
+            return
+                    
+        cog = cog.lower()
+        try:
+            await self.bot.reload_extension(f"cogs.{cog}")
+        except Exception as e:
+            await interaction.response.send_message(f"```py\n{e}```", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"Reloaded {cog}.")
+
+
+    @app_commands.command(description="Sync slash commands.")
+    @commands.is_owner()
+    async def sync(self, interaction: discord.Interaction):
+        await self.bot.sync_commands()
+        await interaction.response.send_message("Synced slash commands.")
+
+
+
 
 
 async def setup(bot):
