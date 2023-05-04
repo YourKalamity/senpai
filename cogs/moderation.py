@@ -51,19 +51,19 @@ class Moderation(commands.Cog):
             except discord.NotFound:
                 await ctx.send("That's not a valid message specified")
             if message:
-                cursor = self.bot.database.cursor()
-                await cursor.execute("SELECT guild_id FROM guilds WHERE guild_id = ?", (ctx.guild.id,))
-                data = await cursor.fetchall()
-                if len(data) == 0:
-                    await cursor.execute("INSERT INTO guilds(guild_id, rule_channel, rule_message) VALUES(?, ?, ?)", (ctx.guild.id, channel.id, message.id,))
-                    await self.bot.database.commit()
-                    await ctx.send("Added rules channel for this server!")
-                    return
-                else:
-                    await cursor.execute("UPDATE guilds SET rule_channel = ?, rule_message = ? WHERE guild_id = ?", (channel.id, message.id, ctx.guild.id,))
-                    await self.bot.database.commit()
-                    await ctx.send("Updated rules channel for this server!")
-                    return
+                async with self.bot.database.cursor() as cursor:
+                    await cursor.execute("SELECT guild_id FROM guilds WHERE guild_id = ?", (ctx.guild.id,))
+                    data = await cursor.fetchall()
+                    if len(data) == 0:
+                        await cursor.execute("INSERT INTO guilds(guild_id, rule_channel, rule_message) VALUES(?, ?, ?)", (ctx.guild.id, channel.id, message.id,))
+                        await self.bot.database.commit()
+                        await ctx.send("Added rules channel for this server!")
+                        return
+                    else:
+                        await cursor.execute("UPDATE guilds SET rule_channel = ?, rule_message = ? WHERE guild_id = ?", (channel.id, message.id, ctx.guild.id,))
+                        await self.bot.database.commit()
+                        await ctx.send("Updated rules channel for this server!")
+                        return
     
     @commands.command()
     async def rule(self, ctx, rule_number):
@@ -73,27 +73,27 @@ class Moderation(commands.Cog):
             pass
         if isinstance(rule_number, int) is False:
             rule_number = None
-        cursor = self.bot.database.cursor()
-        await cursor.execute("SELECT rule_channel, rule_message FROM guilds WHERE guild_id = ?", (ctx.guild.id,))
-        data = await cursor.fetchall()
-        if len(data) == 0:
-            await ctx.send("No rules channel has been set for this server")
-        try:
-            channel_id, message_id = data[0]
-            channel = await self.bot.fetch_channel(channel_id)
-        except discord.NotFound:
-            await ctx.send("That's not a valid channel specified")
-        if channel:
+        async with self.bot.database.cursor() as cursor:
+            await cursor.execute("SELECT rule_channel, rule_message FROM guilds WHERE guild_id = ?", (ctx.guild.id,))
+            data = await cursor.fetchall()
+            if len(data) == 0:
+                await ctx.send("No rules channel has been set for this server")
             try:
-                message = await channel.fetch_message(message_id)
+                channel_id, message_id = data[0]
+                channel = await self.bot.fetch_channel(channel_id)
             except discord.NotFound:
-                await ctx.send("That's not a valid message specified")
-            if message:
-                message_split = message.content.splitlines()
-                if rule_number in range(1, len(message_split) + 1):
-                    await ctx.send(message_split[rule_number - 1])
-                else:
-                    await ctx.send(message.content)
+                await ctx.send("That's not a valid channel specified")
+            if channel:
+                try:
+                    message = await channel.fetch_message(message_id)
+                except discord.NotFound:
+                    await ctx.send("That's not a valid message specified")
+                if message:
+                    message_split = message.content.splitlines()
+                    if rule_number in range(1, len(message_split) + 1):
+                        await ctx.send(message_split[rule_number - 1])
+                    else:
+                        await ctx.send(message.content)
 
 
 
