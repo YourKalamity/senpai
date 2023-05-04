@@ -21,9 +21,12 @@
 #
 
 import discord
+import discord.ui
 from discord.ext import commands
 from discord import app_commands
 import datetime
+from cogs.misc import SimpleNavigation
+
 
 class Stars(commands.Cog):
     def __init__(self, bot):
@@ -31,10 +34,10 @@ class Stars(commands.Cog):
     
 
 
-    def checkStarsEnabled(self, guild_id):
-        cursor = self.bot.database.cursor()
-        cursor.execute("SELECT stars_enabled FROM guilds WHERE guild_id = ?", (guild_id,))
-        result = cursor.fetchone()
+    async def checkStarsEnabled(self, guild_id):
+        async with self.bot.database.cursor() as cursor:
+            await cursor.execute("SELECT stars_enabled FROM guilds WHERE guild_id = ?", (guild_id,))
+            result = await cursor.fetchone()
         if result:
             return result[0]
         else:
@@ -52,7 +55,7 @@ class Stars(commands.Cog):
     
 
     async def cog_check(self, ctx):
-        if self.checkStarsEnabled(ctx.guild.id):
+        if await self.checkStarsEnabled(ctx.guild.id):
             return True
         else:
             ctx.send("Stars are not enabled in this server.")
@@ -60,26 +63,26 @@ class Stars(commands.Cog):
 
 
     async def interaction_check(self, interaction):
-        if self.checkStarsEnabled(interaction.guild.id):
+        if await self.checkStarsEnabled(interaction.guild.id):
             return True
         else:
             await interaction.response.send_message("Stars are not enabled in this server.")
             return False
 
-    def getStars(self, user_id, guild_id):
-        cursor = self.bot.database.cursor()
-        cursor.execute("SELECT stars FROM stars WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
-        result = cursor.fetchone()
+    async def getStars(self, user_id, guild_id):
+        async with self.bot.database.cursor() as cursor:
+            await cursor.execute("SELECT stars FROM stars WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+            result = await cursor.fetchone()
         if result:
             return result[0]
         else:
             return None
 
 
-    def getTopTenStars(self, guild_id):
-        cursor = self.bot.database.cursor()
-        cursor.execute("SELECT user_id, stars FROM stars WHERE guild_id = ? ORDER BY stars DESC LIMIT 10", (guild_id,))
-        result = cursor.fetchall()
+    async def getTopStars(self, guild_id):
+        async with self.bot.database.cursor() as cursor:
+            await cursor.execute("SELECT user_id, stars FROM stars WHERE guild_id = ? ORDER BY stars DESC", (guild_id,))
+            result = await cursor.fetchall()
         if result:
             return result
         else:
@@ -87,83 +90,115 @@ class Stars(commands.Cog):
     
     # Function that checks the star count of a user and assigns them the appropriate role, removing any other star roles they may have
     async def checkStarRoles(self, member):
+        async with self.bot.database.cursor() as cursor:
+            # Get all star roles for the guild and sort them by star count in descending order
+            await cursor.execute("SELECT role_id, stars FROM star_roles WHERE guild_id = ? ORDER BY stars DESC", (member.guild.id,))
+            star_roles = await cursor.fetchall()
 
-        cursor = self.bot.database.cursor()
-        cursor.execute("SELECT stars, role_id FROM star_roles WHERE guild_id = ?", (member.guild.id,))
-        result = cursor.fetchall()
-        if result:
-            for role in member.roles:
-                if role.id in [x[1] for x in result]:
+            # Get the star count of the member
+            await cursor.execute("SELECT stars FROM stars WHERE user_id = ? AND guild_id = ?", (member.id, member.guild.id))
+            star_count = await cursor.fetchone()
+
+            #  Get highest star role for the member
+            if star_count:
+                for role in star_roles:
+                    if star_count[0] >= role[1]:
+                        star_role = member.guild.get_role(role[0])
+                        break
+            else:
+                star_role = None
+
+            # Check if member has the star role
+            if star_role in member.roles:
+                return
+            
+            # Remove all star roles from the member
+            for role in star_roles:
+                role = member.guild.get_role(role[0])
+                if role in member.roles:
                     await member.remove_roles(role)
-            for star_count, role_id in reversed(result):
-                starCount = self.getStars(member.id, member.guild.id)
-                if starCount and starCount >= star_count:
-                    await member.add_roles(member.guild.get_role(role_id))
-                    return member.guild.get_role(role_id).name  
-        else:
-            for role in member.roles:
-                if role.id in [x[1] for x in result]:
-                    await member.remove_roles(role)
-        return None
-    
-    
+
+            # Add the star role to the member
+            if star_role:
+                await member.add_roles(star_role)
+                return star_role
+            else:
+                return None
+
+
     @app_commands.command(description="Set a star role for a certain amount of stars.")
     @commands.has_permissions(manage_roles=True)
     async def setstarrole(self, interaction: discord.Interaction, stars: int, role: discord.Role):
-        cursor = self.bot.database.cursor()
-        cursor.execute("SELECT role_id FROM star_roles WHERE guild_id = ? AND stars = ?", (interaction.guild.id, stars))
-        result = cursor.fetchone()
-        if result:
-            # Update star amount if role already in database
-            cursor.execute("UPDATE star_roles SET stars = ? WHERE guild_id = ? AND role_id = ?", (stars, role.id, interaction.guild.id))
-            self.bot.database.commit()
-            await interaction.response.send_message(f"Updated star role for {stars} stars to {role}.")
-        else:
-            cursor.execute("INSERT INTO star_roles (guild_id, stars, role_id) VALUES (?, ?, ?)", (interaction.guild.id, stars, role.id))
-            self.bot.database.commit()
-            await interaction.response.send_message(f"Set star role for {stars} stars to {role}.")
+        async with self.bot.database.cursor() as cursor:
+            await cursor.execute("SELECT role_id FROM star_roles WHERE guild_id = ? AND stars = ?", (interaction.guild.id, stars))
+            result = cursor.fetchone()
+            if result:
+                # Update star amount if role already in database
+                await cursor.execute("UPDATE star_roles SET stars = ? WHERE guild_id = ? AND role_id = ?", (stars, role.id, interaction.guild.id))
+                self.bot.database.commit()
+                await interaction.response.send_message(f"Updated star role for {stars} stars to {role}.")
+            else:
+                await cursor.execute("INSERT INTO star_roles (guild_id, stars, role_id) VALUES (?, ?, ?)", (interaction.guild.id, stars, role.id))
+                self.bot.database.commit()
+                await interaction.response.send_message(f"Set star role for {stars} stars to {role}.")
 
     @app_commands.command(description="View your starcount.")
     async def stars(self, interaction: discord.Interaction):
-        stars = self.getStars(interaction.user.id, interaction.guild.id)
+        stars = await self.getStars(interaction.user.id, interaction.guild.id)
         if stars:
             await interaction.response.send_message(f"You have {stars} stars.")
         else:
             await interaction.response.send_message("You have no stars.")
 
 
-    @app_commands.command(description="View the top 10 users with the most stars.")
+    @app_commands.command(description="View the users with the most stars.")
     async def topstars(self, interaction: discord.Interaction):
-        top_ten = self.getTopTenStars(interaction.guild.id)
-        if top_ten:
-            message = "## Top 10 users with the most stars:\n"
-            # Ensure users with the same amount of stars are tied
-            for i, user in enumerate(top_ten):
-                try:
-                    member = await self.bot.fetch_user(user[0])
-                except discord.NotFound:
-                    member = user[0]
-                message += f"{i+1}. {member} - **{user[1]}** stars\n"
-            await interaction.response.send_message(message)
-        else:
-            await interaction.response.send_message("No users have any stars.")
+        top = await self.getTopStars(interaction.guild.id)
+        if top:
 
+            pages = []
+            # Create embeds for each page with 10 rows each
+            for i in range(0, len(top), 10):
+                embed = discord.Embed(title="Top Stars", color=0xfadadd)
+                page_data = ""
+                for j in range(i, i + 10):
+                    
+                    if j >= len(top):
+                        break
+                    user = interaction.guild.get_member(top[j][0])
+                    if user:
+                        page_data += f"*{j + 1}*. **{user.name}**#{user.discriminator} - **{top[j][1]}** stars\n"
+                    else:
+                        try:
+                            user = await self.bot.fetch_user(top[j][0])
+                        except discord.NotFound:
+                            page_data += f"*{j + 1}*. **{top[j][0]}** - **{top[j][1]}** stars\n"
+                        
+                        else:
+                            page_data += f"*{j + 1}*. **{user.name}**#{user.discriminator} - **{top[j][1]}** stars\n"
+
+                embed.add_field(name="Results", value=page_data)
+                embed.set_thumbnail(url=interaction.guild.icon.url)
+    
+                pages.append(embed)
+                
+        # Send the embeds as a paginated message
+        await interaction.response.send_message(embed=pages[0], view=SimpleNavigation(pages))
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload):
         if str(payload.emoji) == "⭐":
             message = await self.bot.get_channel(payload.channel_id).fetch_message(payload.message_id)
             if payload.user_id != message.author.id:
-                stars = self.getStars(message.author.id, payload.guild_id)
-                if stars:
-                    stars += 1
-                    cursor = self.bot.database.cursor()
-                    cursor.execute("UPDATE stars SET stars = ? WHERE user_id = ? AND guild_id = ?", (stars, message.author.id, payload.guild_id))
-                    self.bot.database.commit()
-                else:
-                    cursor = self.bot.database.cursor()
-                    cursor.execute("INSERT INTO stars VALUES (?, ?, ?)", (message.author.id, payload.guild_id, 1))
-                    self.bot.database.commit()
+                stars = await self.getStars(message.author.id, payload.guild_id)
+                async with self.bot.database.cursor() as cursor:
+                    if stars:
+                        stars += 1
+                        await cursor.execute("UPDATE stars SET stars = ? WHERE user_id = ? AND guild_id = ?", (stars, message.author.id, payload.guild_id))
+                        await self.bot.database.commit()
+                    else:
+                        await cursor.execute("INSERT INTO stars VALUES (?, ?, ?)", (message.author.id, payload.guild_id, 1))
+                        await self.bot.database.commit()
         
         if payload.guild_id == 725325701321981962:
             # Give the user the appropriate star role
@@ -178,16 +213,15 @@ class Stars(commands.Cog):
         if str(payload.emoji) == "⭐":
             message = await self.bot.get_channel(payload.channel_id).fetch_message(payload.message_id)
             if payload.user_id != message.author.id:
-                stars = self.getStars(message.author.id, payload.guild_id)
-                if stars:
-                    stars -= 1
-                    cursor = self.bot.database.cursor()
-                    cursor.execute("UPDATE stars SET stars = ? WHERE user_id = ? AND guild_id = ?", (stars, message.author.id, payload.guild_id))
-                    self.bot.database.commit()
-                else:
-                    cursor = self.bot.database.cursor()
-                    cursor.execute("INSERT INTO stars VALUES (?, ?, ?)", (message.author.id, payload.guild_id, 1))
-                    self.bot.database.commit()
+                stars = await self.getStars(message.author.id, payload.guild_id)
+                async with self.bot.database.cursor() as cursor:
+                    if stars:
+                        stars -= 1
+                        await cursor.execute("UPDATE stars SET stars = ? WHERE user_id = ? AND guild_id = ?", (stars, message.author.id, payload.guild_id))
+                        await self.bot.database.commit()
+                    else:
+                        await cursor.execute("INSERT INTO stars VALUES (?, ?, ?)", (message.author.id, payload.guild_id, 1))
+                        await self.bot.database.commit()
         
         if payload.guild_id == 725325701321981962:
             # Give the user the appropriate star role
