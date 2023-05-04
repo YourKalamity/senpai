@@ -76,13 +76,6 @@ class Senpai(discord.ext.commands.AutoShardedBot):
         allowed_mentions = discord.AllowedMentions(everyone=False, roles=True)
         activity = discord.Game(self.settings["STATUS"])
         status = discord.Status.idle
-        try:
-            self.database = sqlite3.connect(self.settings["DATABASE"])
-            print("[INFO] Connected to database")
-        except Exception as e:
-            print(f"[EXCP] {e}")
-            print("[EXCP] Could not connect to database")
-            sys.exit(1)
         
         super().__init__(
                 command_prefix = self.settings["PREFIXES"],
@@ -94,7 +87,8 @@ class Senpai(discord.ext.commands.AutoShardedBot):
                 application_id = self.settings["APPLICATION_ID"]
         )
 
-    async def log_error(self, ctx, error):
+
+    async def log_command_error(self, ctx, error):
         guild = self.get_guild(self.settings["GUILD"])
         channel = guild.get_channel(self.settings["ERROR_CHANNEL"])
         # Create hash for error for easier searching
@@ -115,46 +109,65 @@ class Senpai(discord.ext.commands.AutoShardedBot):
 
         await ctx.send(f"Senpai ran into an error :( `{error_hash}`")
 
-    def setup_db(self):
-        cursor = self.database.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS guilds (
-                guild_id integer PRIMARY KEY,
-                rule_channel integer,
-                rule_message integer,
-                log_channel integer,
-                min_mod_role integer,
-                stars_enabled boolean
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS blacklist (
-                user_id integer PRIMARY KEY,
-                reason text
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS stars (
-                user_id integer,
-                guild_id integer,
-                stars integer,
-                PRIMARY KEY (user_id, guild_id)
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS star_roles (
-                guild_id integer,
-                role_id integer,
-                stars integer,
-                PRIMARY KEY (guild_id, role_id)
-            )
-        ''')
+    async def log_error(self, error):
+        guild = self.get_guild(self.settings["GUILD"])
+        channel = guild.get_channel(self.settings["ERROR_CHANNEL"])
+        # Create hash for error for easier searching
+        error_hash = hash(error)
+        # Get full exception
+        exception = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        # Format error message with traceback and invocation in embed
+        embed = discord.Embed(title=f"Senpai ran into an error :( `{error_hash}`", description=f"```py\n{exception}\n```", color=0xff0000)
+        await channel.send(embed=embed)
+        
+    async def setup_db(self):
+        async with self.database.cursor() as cursor:
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS guilds (
+                    guild_id integer PRIMARY KEY,
+                    rule_channel integer,
+                    rule_message integer,
+                    log_channel integer,
+                    min_mod_role integer,
+                    stars_enabled boolean
+                )
+            ''')
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS blacklist (
+                    user_id integer PRIMARY KEY,
+                    reason text
+                )
+            ''')
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS stars (
+                    user_id integer,
+                    guild_id integer,
+                    stars integer,
+                    PRIMARY KEY (user_id, guild_id)
+                )
+            ''')
+            await cursor.execute('''
+                CREATE TABLE IF NOT EXISTS star_roles (
+                    guild_id integer,
+                    role_id integer,
+                    stars integer,
+                    PRIMARY KEY (guild_id, role_id)
+                )
+            ''')
 
     async def setup_hook(self):
         self.session: aiohttp.ClientSession = aiohttp.ClientSession() 
         self.tree.copy_global_to(guild=discord.Object(id=725325701321981962))
         await self.tree.sync(guild=discord.Object(id=725325701321981962))
-        
+
+        try:
+            self.database = await asqlite.connect(self.settings["DATABASE"])
+            print("[INFO] Connected to database")
+        except Exception as e:
+            print(f"[EXCP] {e}")
+            print("[EXCP] Could not connect to database")
+            sys.exit(1)
+        await self.setup_db()
         print(f"[COGS] Loading cogs...")
         cog = ""
         for filename in os.listdir("./cogs"):
@@ -166,6 +179,7 @@ class Senpai(discord.ext.commands.AutoShardedBot):
             except Exception as e:
                print(f"[COGS] Failed to load cog : {filename}")
                print(f"[EXCP] {e}")
+               print(f"[EXCP] {traceback.format_exc()}")
         try:
             cog = "jishaku"
             await self.load_extension("jishaku")
@@ -176,17 +190,20 @@ class Senpai(discord.ext.commands.AutoShardedBot):
 
     async def on_command_error(self, ctx, error):
         print(f"[EXCP] {error}")
+        print(f"[EXCP] {ctx.message.content}")
         if type(error) == commands.CommandNotFound:
             return
         else:
-            await self.log_error(ctx, error)
+            await self.log_command_error(ctx, error)
     
+    async def on_error(self, error):
+        print(f"[EXCP] {error}")
+        await self.log_error(error)
     
 
     def run(self, token=None):
         if token == None:
             token = self.settings["TOKEN"]
-        self.setup_db()
         super().run(token)
 
 
