@@ -29,15 +29,21 @@ from cogs.misc import SimpleNavigation
 
 
 class Stars(commands.Cog):
+
+    stars_enabled_cache = {}
+
     def __init__(self, bot):
         self.bot = bot
     
 
-
     async def checkStarsEnabled(self, guild_id):
+        if guild_id in self.stars_enabled_cache:
+            return self.stars_enabled_cache[guild_id]
+
         async with self.bot.database.cursor() as cursor:
             await cursor.execute("SELECT stars_enabled FROM guilds WHERE guild_id = ?", (guild_id,))
             result = await cursor.fetchone()
+            self.stars_enabled_cache[guild_id] = result[0]
         if result:
             return result[0]
         else:
@@ -52,7 +58,6 @@ class Stars(commands.Cog):
         if error == commands.errors.CheckFailure:
             return
 
-    
 
     async def cog_check(self, ctx):
         if await self.checkStarsEnabled(ctx.guild.id):
@@ -68,6 +73,7 @@ class Stars(commands.Cog):
         else:
             await interaction.response.send_message("Stars are not enabled in this server.")
             return False
+
 
     async def getStars(self, user_id, guild_id):
         async with self.bot.database.cursor() as cursor:
@@ -87,7 +93,8 @@ class Stars(commands.Cog):
             return result
         else:
             return None
-    
+
+
     # Function that checks the star count of a user and assigns them the appropriate role, removing any other star roles they may have
     async def checkStarRoles(self, member):
         async with self.bot.database.cursor() as cursor:
@@ -125,6 +132,20 @@ class Stars(commands.Cog):
             else:
                 return None
 
+
+    async def addStarsToRecord(self, user_id, guild_id, new_stars):
+        async with self.bot.database.cursor() as cursor:
+            try:
+                await cursor.execute("""
+                    INSERT INTO stars (user_id, guild_id, stars)
+                    VALUES (?, ?, ?) 
+                    ON CONFLICT(user_id, guild_id) DO 
+                        UPDATE SET stars = stars + excluded.stars
+                """, (user_id, guild_id, new_stars))
+                await self.bot.database.commit()
+            except Exception as e:
+                return e
+    
 
     @app_commands.command(description="Set a star role for a certain amount of stars.")
     @commands.has_permissions(manage_roles=True)
@@ -185,49 +206,32 @@ class Stars(commands.Cog):
         # Send the embeds as a paginated message
         await interaction.response.send_message(embed=pages[0], view=SimpleNavigation(pages))
 
+
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload):
         if str(payload.emoji) == "⭐":
             message = await self.bot.get_channel(payload.channel_id).fetch_message(payload.message_id)
             if payload.user_id != message.author.id:
-                stars = await self.getStars(message.author.id, payload.guild_id)
-                async with self.bot.database.cursor() as cursor:
-                    if stars:
-                        stars += 1
-                        await cursor.execute("UPDATE stars SET stars = ? WHERE user_id = ? AND guild_id = ?", (stars, message.author.id, payload.guild_id))
-                        await self.bot.database.commit()
-                    else:
-                        await cursor.execute("INSERT INTO stars VALUES (?, ?, ?)", (message.author.id, payload.guild_id, 1))
-                        await self.bot.database.commit()
+                await self.addStarsToRecord(message.author.id, payload.guild_id, 1)
         
-        if payload.guild_id == 725325701321981962:
             # Give the user the appropriate star role
             guild = await self.bot.fetch_guild(payload.guild_id)
             member = await guild.fetch_member(payload.user_id)
             await self.checkStarRoles(member)
 
     
-
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload):
         if str(payload.emoji) == "⭐":
             message = await self.bot.get_channel(payload.channel_id).fetch_message(payload.message_id)
             if payload.user_id != message.author.id:
-                stars = await self.getStars(message.author.id, payload.guild_id)
-                async with self.bot.database.cursor() as cursor:
-                    if stars:
-                        stars -= 1
-                        await cursor.execute("UPDATE stars SET stars = ? WHERE user_id = ? AND guild_id = ?", (stars, message.author.id, payload.guild_id))
-                        await self.bot.database.commit()
-                    else:
-                        await cursor.execute("INSERT INTO stars VALUES (?, ?, ?)", (message.author.id, payload.guild_id, 1))
-                        await self.bot.database.commit()
-        
-        if payload.guild_id == 725325701321981962:
+                await self.addStarsToRecord(message.author.id, payload.guild_id, -1)
+
             # Give the user the appropriate star role
             guild = await self.bot.fetch_guild(payload.guild_id)
             member = await guild.fetch_member(payload.user_id)
             await self.checkStarRoles(member)
+
 
     @app_commands.command(description="Iterate through all users with stars and give them the appropriate star role.")
     @commands.has_permissions(administrator=True)
@@ -248,7 +252,6 @@ class Stars(commands.Cog):
         await interaction.channel.send("Done!")
 
 
-
     @app_commands.command(description="Iterate through all messages in the current channel and add stars to the database.")
     @commands.has_permissions(administrator=True)
     async def addstars(self, interaction: discord.Interaction):
@@ -263,27 +266,14 @@ class Stars(commands.Cog):
             # Check if the message has a star
             if "⭐" in [str(reaction.emoji) for reaction in message.reactions]:
                 # Get the number of stars
-                stars = message.reactions[0].count
-                # Check if the star record already exists for the user
-                cursor = self.bot.database.cursor()
-                cursor.execute("SELECT stars FROM stars WHERE user_id = ? AND guild_id = ?", (message.author.id, interaction.guild.id))
-                result = cursor.fetchone()
-                if result:
-                    db_stars = result[0]
-                    # Add the stars to the user's current star count
-                    try:
-                        cursor.execute("UPDATE stars SET stars = ? WHERE user_id = ? AND guild_id = ?", (db_stars + stars, message.author.id, interaction.guild.id))
-                        self.bot.database.commit()
-                    except Exception as e:
-                        interaction.followup.send_message(f"Error adding stars to {message.author}: {e}")
-                else:
-                    # Create a new entry for the user
-                    cursor = self.bot.database.cursor()
-                    try:
-                        cursor.execute("INSERT INTO stars VALUES (?, ?, ?)", (message.author.id, interaction.guild.id, stars))
-                        self.bot.database.commit()
-                    except Exception as e:
-                        interaction.followup.send_message(f"Error adding stars to {message.author}: {e}")
+                for reaction in message.reactions:
+                    if str(reaction.emoji) == "⭐":
+                        stars = reaction.count
+                        break
+
+                await self.addStarsToRecord(message.author.id, interaction.guild.id, stars)
+            
+                
                 # Update the stars_dictionary with the added stars
                 if message.author.id in stars_dictionary:
                     stars_dictionary[message.author.id] += stars
@@ -339,24 +329,17 @@ class Stars(commands.Cog):
                         stars = message.reactions[0].count
                         # Check if the star record already exists for the user
                         cursor = self.bot.database.cursor()
-                        cursor.execute("SELECT stars FROM stars WHERE user_id = ? AND guild_id = ?", (message.author.id, interaction.guild.id))
-                        result = cursor.fetchone()
-                        if result:
-                            db_stars = result[0]
-                            # Add the stars to the user's current star count
-                            try:
-                                cursor.execute("UPDATE stars SET stars = ? WHERE user_id = ? AND guild_id = ?", (db_stars + stars, message.author.id, interaction.guild.id))
-                                self.bot.database.commit()
-                            except Exception as e:
-                                interaction.followup.send_message(f"Error adding stars to {message.author}: {e}")
-                        else:
-                            # Create a new entry for the user
-                            cursor = self.bot.database.cursor()
-                            try:
-                                cursor.execute("INSERT INTO stars VALUES (?, ?, ?)", (message.author.id, interaction.guild.id, stars))
-                                self.bot.database.commit()
-                            except Exception as e:
-                                interaction.followup.send_message(f"Error adding stars to {message.author}: {e}")
+                        try:
+                            await cursor.execute("""
+                                INSERT INTO stars (user_id, guild_id, stars)
+                                VALUES (?, ?, ?) 
+                                ON CONFLICT(user_id, guild_id) DO 
+                                    UPDATE SET stars = stars + excluded.stars
+                            """, (message.author.id, interaction.guild.id, stars))
+                            await self.bot.database.commit()
+                        except Exception as e:
+                            interaction.followup.send_message(f"Error adding stars to {message.author}: {e}")
+                        
                         # Update the stars_dictionary with the added stars
                         if message.author.id in stars_dictionary:
                             stars_dictionary[message.author.id] += stars
